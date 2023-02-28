@@ -186,8 +186,8 @@ def main():
     internalblue = HCICore(log_level="debug", user_channel=True)
 
     if len(sys.argv) != 2:
-        log.critical(f"Usage: {sys.argv[0]} [BD_ADDR]")
-        log.critical(f"\t[BD_ADDR] can be given as hexstring or with colons separating ever other byte.")
+        logging.critical(f"Usage: {sys.argv[0]} [BD_ADDR]")
+        logging.critical(f"\t[BD_ADDR] can be given as hexstring or with colons separating ever other byte.")
         sys.exit(1)
 
     target = sys.argv[1]
@@ -202,7 +202,7 @@ def main():
         internalblue.interface = internalblue.device_list()[0][1]
 
     if not internalblue.connect():
-        log.critical("No connection to internalblue device.")
+        logging.critical("No connection to internalblue device.")
         sys.exit(-1)
 
     # now we need the bd addr of the target
