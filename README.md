@@ -1,7 +1,7 @@
 # Bluetooth SMP PoCs
 
 This repository contains proof-of-concepts for attacks against the BLE SMP protocols when a static
-passkey is used. More information can be found in the corresponding [Insinuator blogpost]().
+passkey is used. More information can be found in the corresponding [Insinuator blogpost](https://web.archive.org/web/20250816205228/https://insinuator.net/2021/10/change-your-ble-passkey-like-you-change-your-underwear/).
 
 ## SMP Bruteforce
 The bruteforce script requires [Internalblue](https://github.com/seemoo-lab/internalblue) and
