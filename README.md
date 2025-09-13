@@ -5,7 +5,7 @@ passkey is used. More information can be found in the corresponding [Insinuator 
 
 ## SMP Bruteforce
 
-The script uses Google's [Bumble](https://google.github.io/bumble/) Bluetooth library and therefore works with any Bluetooth transport that [Bumble supports](https://google.github.io/bumble/transports/index.html).
+The script uses Google's [Bumble](https://google.github.io/bumble/) Bluetooth library and therefore works with any Bluetooth transport that [Bumble supports](https://google.github.io/bumble/transports/index.html). Earlier versions of this tool were built on [Internalblue](https://github.com/seemoo-lab/internalblue). Bumble makes this more accessible due to the support of different transports.
 
 To run the script you need to Bluetooth address of the device you want to brute-force. Run the
 script as follows:
