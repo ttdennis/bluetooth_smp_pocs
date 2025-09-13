@@ -167,6 +167,9 @@ class SMPBruteforce:
                 # this essentially overwrites Bumble's SMP handling
                 self.transport.register_raw_cid_handler(SMP_CID, smp.listener)
 
+                # Here you can do some operations (such as reading from a protected GATT
+                # characteristic) to trigger the pairing!
+
                 # let SMP do its thing and obtain the failing index to flip the bit in our list
                 while connection.handle and not smp.bit_index >= 20 and not smp.error:
                     await asyncio.sleep(0.1)

@@ -17,6 +17,8 @@ python smp_bruteforce.py --target AA:BB:CC:DD:EE:FF
 It will assume `usb:0` as default transport. This will usually work if you have exactly one USB Bluetooth dongle in your system.
 If you're using some other transport, you can specify it with the `-c` option.
 
+The tool waits for an SMP `SMP_SECURITY_REQUEST_COMMAND`. So you might have to trigger an action (such as reading from a protected GATT characteristic) to force the target to initiate pairing.
+
 Successfully running the script looks as follows:
 
 ![smp_bruteforce script excecution GIF](assets/smp_bruteforce.gif)
